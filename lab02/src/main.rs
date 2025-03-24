@@ -15,9 +15,9 @@ async fn main(_spawner: Spawner) {
     let mut pin= Output::new(peripherals.PIN_2, Level::Low);
 
     loop {
-        pin.set_high();
-        Timer::after_millis(150).await;    
-        pin.set_low();
-        Timer::after_millis(150).await; 
+        // pin.set_high();
+        // Timer::after_millis(150).await;    
+        // pin.set_low();
+        // Timer::after_millis(150).await; 
     }
 }
