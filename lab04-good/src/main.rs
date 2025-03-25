@@ -9,16 +9,28 @@
 
 use embassy_executor::Spawner;
 use embassy_futures::yield_now;
-use embassy_rp::{adc::Channel, gpio::{AnyPin, Level, Output, Pin, Pull}, peripherals};
+// use embassy_net::Config; // not useful
 use embassy_time::{Duration, Instant, Timer};
+use fixed::traits::ToFixed; // For 5 - servo
+//use irqs::Irqs; // already defined
 use {defmt_rtt as _, panic_probe as _};
-// Use the logging macros provided by defmt.
-use defmt::*;
+use defmt::*; // Use the logging macros provided by defmt.
+
+// use embassy_rp::{config, peripherals};
+use embassy_rp::{adc::{Adc, Channel, InterruptHandler}, config, gpio::{AnyPin, Input, Level, Output, Pin, Pull}, pwm::{Pwm, SetDutyCycle}};
+use embassy_rp::pwm::Config as ConfigPwm;
+use embassy_rp::adc::Config as ConfigAdc; // ADC config
+use embassy_rp::bind_interrupts;
 
 // Import interrupts definition module
 mod irqs;
 
-//mod utils;
+// Import
+//mod utils;\
+
+bind_interrupts!(struct Irqs {
+    ADC_IRQ_FIFO => InterruptHandler;
+});
 
 #[embassy_executor::task(pool_size = 2)]
 async fn blink_led(pin: AnyPin, time: u64) {
@@ -35,7 +47,8 @@ async fn blink_led(pin: AnyPin, time: u64) {
     }
 }
 
-//embasyy
+// #[embassy_executor::task(pool_size = 1)]
+// async fn decrease_inensity(mut 
 
 
 
@@ -43,6 +56,7 @@ async fn blink_led(pin: AnyPin, time: u64) {
 async fn main(spawner: Spawner) {
     // Get a handle to the RP's peripherals.
     let peripherals = embassy_rp::init(Default::default());
+    let mut adc = Adc::new(peripherals.ADC, Irqs, ConfigAdc::default());
 
     info!("Hello world!");
 
