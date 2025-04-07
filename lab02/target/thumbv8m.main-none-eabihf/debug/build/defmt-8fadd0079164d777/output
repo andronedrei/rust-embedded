@@ -1,0 +1,3 @@
+cargo:rustc-link-search=/home/andrei/Coding/rust-embedded/lab02/target/thumbv8m.main-none-eabihf/debug/build/defmt-8fadd0079164d777/out
+cargo:rustc-check-cfg=cfg(c_variadic)
+cargo:rustc-check-cfg=cfg(no_cas)
