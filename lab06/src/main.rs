@@ -1,89 +1,104 @@
-// +---------------------------------------------------------------------------+
-// |                             PM/MA lab skel                                |
-// +---------------------------------------------------------------------------+
-
-//! By default, this app prints a "Hello world" message with `defmt`.
-
 #![no_std]
 #![no_main]
 
-use core::cmp::{max, min};
+use defmt::info;
+use defmt_rtt as _;
+use panic_probe as _;
 
-use embassy_executor::Spawner;
-use embassy_futures::{select::select, yield_now};
-// use embassy_net::Config; // not useful
-use embassy_time::{Duration, Instant, Timer};
-use fixed::traits::ToFixed; // For 5 - servo
-//use irqs::Irqs; // already defined
-use {defmt_rtt as _, panic_probe as _};
-use defmt::*; // Use the logging macros provided by defmt.
-
-// use embassy_rp::{config, peripherals};
-use embassy_rp::{adc::{Adc, InterruptHandler}, config, gpio::{AnyPin, Input, Level, Output, Pin, Pull}, pwm::{Pwm, SetDutyCycle}, spi::{self, Spi}};
-use embassy_rp::pwm::Config as ConfigPwm;
-use embassy_rp::adc::Config as ConfigAdc; // ADC config
 use embassy_rp::bind_interrupts;
+use embassy_rp::i2c::{Config as I2cConfig, I2c, InterruptHandler as I2CInterruptHandler};
+use embassy_rp::peripherals::I2C1;
+use embedded_hal_async::i2c::I2c as _;
+use embassy_time::{Timer, Duration};
 
-use embassy_sync::{blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex}, channel::{Channel, Receiver, Sender}};
-use embassy_sync::signal::Signal;
-use embassy_futures::select::Either::Second;
-use embassy_futures::select::Either::First;
-use embassy_futures::join::join;
-
-
-// Import interrupts definition module
 mod irqs;
-
-// Import
-mod utils;
-use utils::{creeate_pwm_config, update_pwm_config, Lane};
-
-
 bind_interrupts!(struct Irqs {
-    ADC_IRQ_FIFO => InterruptHandler;
+    I2C1_IRQ => I2CInterruptHandler<I2C1>;
 });
 
-pub enum LedControl {
-    Increase,
-    Decrease,
-}
-
-static CHANNEL: Channel<ThreadModeRawMutex, LedControl, 64> = Channel::new();
-static SIG: Signal<CriticalSectionRawMutex, u16> = Signal::new();
-
+const BMP280_ADDR: u8 = 0x76;       // BMP280
+const EEPROM_ADDR: u8 = 0x50;        // AT24C256 EEPROM
+const EEPROM_STORAGE_ADDR: u16 = 0xACDC; // Unde dai store in EEPROM
 
 #[embassy_executor::main]
-async fn main(spawner: Spawner) {
-    info!("Hello world!");
-    const REG_ADDR: u8 = 0x75;
+async fn main(_spawner: embassy_executor::Spawner) {
+    let p = embassy_rp::init(Default::default());
+    let sda = p.PIN_10;
+    let scl = p.PIN_11;
 
-    // Get a handle to the RP's peripherals.
-    let peripherals = embassy_rp::init(Default::default());
-    let mut adc = Adc::new(peripherals.ADC, Irqs, ConfigAdc::default());
+    let mut config = I2cConfig::default();
+    config.frequency = 100_000;
+    let mut i2c = I2c::new_async(p.I2C1, scl, sda, Irqs, config);
 
-    // intializare
-    let mut config = spi::Config::default();
-    config.frequency = 1_000_000;
-    config.phase = spi::Phase::CaptureOnFirstTransition;
-    config.polarity = spi::Polarity::IdleLow;
+    if i2c.write(BMP280_ADDR, &[0xF4, 0x43]).await.is_err() {
+        info!("BMP280 configuration failed");
+        return;
+    }
 
-    let mosi = peripherals.PIN_3;
-    let miso = peripherals.PIN_4;
-    let clk = peripherals.PIN_2;
+    let mut calib = [0u8; 6];
+    if i2c.write_read(BMP280_ADDR, &[0x88], &mut calib).await.is_err() {
+        info!("BMP280 calibration read failed");
+        return;
+    }
+    let dig_t1 = u16::from_le_bytes([calib[0], calib[1]]);
+    let dig_t2 = i16::from_le_bytes([calib[2], calib[3]]);
+    let dig_t3 = i16::from_le_bytes([calib[4], calib[5]]);
+    info!("Cal: T1={} T2={} T3={}", dig_t1, dig_t2, dig_t3);
 
-    let mut spi = Spi::new(peripherals.SPI0, clk, mosi, miso, peripherals.DMA_CH0, peripherals.DMA_CH1, config);
-    let mut cs = Output::new(peripherals.PIN_5, Level::High);
+    // Read previously stored temperature from EEPROM.
+    let mut prev_temp = [0u8; 4];
+    if i2c.write_read(EEPROM_ADDR, &EEPROM_STORAGE_ADDR.to_be_bytes(), &mut prev_temp)
+        .await
+        .is_ok()
+    {
+        let temp = i32::from_be_bytes(prev_temp);
+        info!("Stored temp: {}.{:02}°C", temp / 100, temp.abs() % 100);
+    } else {
+        info!("No stored temperature in EEPROM");
+    }
 
-    cs.set_low();
-    let tx_buf = [(1 << 7) | REG_ADDR, 0x00]; // first value of buffer is the control byte, second is a *don't care* value
-    let mut rx_buf = [0u8; 2]; // initial values that will be replaced by the received bytes
-    spi.transfer(&mut rx_buf, &tx_buf).await.unwrap();
-    cs.set_high();
-
-    let register_value = rx_buf[1]; // the second byte in the buffer will be the received register value
-    info!("{}", register_value);
-    //117
+    // // Main measurement loop.
     // loop {
+    //     let mut t_data = [0u8; 3];
+    //     if i2c.write_read(BMP280_ADDR, &[0xFA], &mut t_data)
+    //         .await
+    //         .is_err()
+    //     {
+    //         info!("Temperature read failed");
+    //         Timer::after(Duration::from_secs(1)).await;
+    //         continue;
+    //     }
 
+    //     // Combine the bytes to get a 20-bit raw temperature value.
+    //     let raw_temp = ((t_data[0] as u32) << 12)
+    //         | ((t_data[1] as u32) << 4)
+    //         | ((t_data[2] as u32) >> 4);
+
+    //     // Compensate temperature as per datasheet.
+    //     let var1 = (((raw_temp >> 3) as i32 - (dig_t1 as i32 * 2)) * (dig_t2 as i32)) >> 11;
+    //     let var2 = ((((raw_temp >> 4) as i32 - dig_t1 as i32).pow(2) >> 12) * (dig_t3 as i32)) >> 14;
+    //     let t_fine = var1 + var2;
+    //     let temp = (t_fine * 5 + 128) >> 8; // temperature in hundredths of °C
+
+    //     info!("Temp: {}.{:02}°C", temp / 100, temp.abs() % 100);
+
+    //     // Write current temperature to EEPROM.
+    //     let temp_bytes = temp.to_be_bytes();
+    //     let addr_bytes = EEPROM_STORAGE_ADDR.to_be_bytes();
+    //     let write_buf = [
+    //         addr_bytes[0],
+    //         addr_bytes[1],
+    //         temp_bytes[0],
+    //         temp_bytes[1],
+    //         temp_bytes[2],
+    //         temp_bytes[3],
+    //     ];
+    //     if i2c.write(EEPROM_ADDR, &write_buf).await.is_err() {
+    //         info!("EEPROM write failed");
+    //     } else {
+    //         Timer::after(Duration::from_millis(5)).await;
+    //     }
+
+    //     Timer::after(Duration::from_secs(1)).await;
     // }
 }
